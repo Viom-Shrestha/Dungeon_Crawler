@@ -8,6 +8,7 @@ from enum import Enum, auto
 
 # Initialize Pygame
 pygame.init()
+pygame.mixer.init()
 
 # Constants
 SCREEN_WIDTH = 1200
@@ -33,6 +34,9 @@ PURPLE = (128, 0, 128)
 BROWN = (139, 69, 19)
 GOLD = (255, 215, 0)
 
+sword_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "sword.mp3"))
+monster_roar = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "monster_roar.mp3"))
+levelup_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "levelup.mp3"))
 # Import your existing classes
 from dungeon_crawler import (
     Direction, TileType, Item, Monster, Quest, QuestNode, QuestLog,
@@ -125,10 +129,29 @@ class DungeonCrawlerGUI:
         self.title_font = pygame.font.Font(None, 64)
 
         # Sprites
-        self.player_sprite = None
+        self.player_sprites = {}
+        self.current_direction = "down"
         self.monster_sprite = None
         self.chest_sprite = None
         self.stairs_sprite = None
+
+        # --- Multiplayer setup ---
+        self.multiplayer = True  # set False to disable 2P
+        self.player2 = Player(1, 1)
+        self.player2_sprites = {}
+        self.player_sprite = None
+        self.player2_sprite = None
+        
+        # --- Shared inventory & active player ---
+        self.player2.inventory = self.player.inventory
+        self.active_player = 1  # 1 or 2 — toggled by keys 1/2
+        # Friendly UI hint for inventory usage
+        self.inventory_target_names = {1: "P1", 2: "P2"}
+
+
+        # Monster sprites dict (used in draw & encounters)
+        self.monster_sprites = {}
+
         self.load_sprites()
 
         # Monster + Items (no doors/keys now)
@@ -145,14 +168,61 @@ class DungeonCrawlerGUI:
 
     # ---------- Setup / Loading ----------
     def load_sprites(self):
-        player_path = os.path.join(ASSETS_DIR, "player.png")
-        monster_path = os.path.join(ASSETS_DIR, "monster.png")
-        chest_path = os.path.join(ASSETS_DIR, "chest.png")
-        stairs_path = os.path.join(ASSETS_DIR, "stairs.png")
-        self.player_sprite = pygame.transform.scale(safe_load_sprite(player_path, BLUE), (TILE_SIZE, TILE_SIZE))
-        self.monster_sprite = pygame.transform.scale(safe_load_sprite(monster_path, RED), (TILE_SIZE, TILE_SIZE))
-        self.chest_sprite = pygame.transform.scale(safe_load_sprite(chest_path, YELLOW), (TILE_SIZE, TILE_SIZE))
-        self.stairs_sprite = pygame.transform.scale(safe_load_sprite(stairs_path, PURPLE), (TILE_SIZE, TILE_SIZE))
+        # Player 1 directional
+        for d, color in [("up", BLUE), ("down", BLUE), ("left", BLUE), ("right", BLUE)]:
+            p = os.path.join(ASSETS_DIR, f"player_{d}.png")
+            self.player_sprites[d] = pygame.transform.scale(
+                safe_load_sprite(p, color), (TILE_SIZE, TILE_SIZE)
+            )
+        # Fallback from player.png if any missing
+        fallback = pygame.transform.scale(
+            safe_load_sprite(os.path.join(ASSETS_DIR, "player.png"), BLUE),
+            (TILE_SIZE, TILE_SIZE),
+        )
+        for d in ["up", "down", "left", "right"]:
+            if not self.player_sprites.get(d):
+                self.player_sprites[d] = fallback
+        self.player_sprite = self.player_sprites["down"]
+
+        # Player 2 directional (cyan-ish fallback)
+        if self.multiplayer:
+            for d, color in [("up", (0, 220, 200)), ("down", (0, 220, 200)),
+                            ("left", (0, 220, 200)), ("right", (0, 220, 200))]:
+                p2 = os.path.join(ASSETS_DIR, f"player2_{d}.png")
+                self.player2_sprites[d] = pygame.transform.scale(
+                    safe_load_sprite(p2, color), (TILE_SIZE, TILE_SIZE)
+                )
+            # Fallback from player2.png if any missing
+            fallback2 = pygame.transform.scale(
+                safe_load_sprite(os.path.join(ASSETS_DIR, "player2.png"), (0, 220, 200)),
+                (TILE_SIZE, TILE_SIZE),
+            )
+            for d in ["up", "down", "left", "right"]:
+                if not self.player2_sprites.get(d):
+                    self.player2_sprites[d] = fallback2
+            self.player2_sprite = self.player2_sprites["down"]
+
+        # Monsters (per-species)
+        for name in ["goblin", "zombie", "skeleton", "orc", "troll", "ogre", "dragon"]:
+            path = os.path.join(ASSETS_DIR, f"{name}.png")
+            self.monster_sprites[name] = pygame.transform.scale(
+                safe_load_sprite(path, RED), (TILE_SIZE, TILE_SIZE)
+            )
+        # Fallback single monster sprite
+        self.monster_sprite = pygame.transform.scale(
+            safe_load_sprite(os.path.join(ASSETS_DIR, "monster.png"), RED),
+            (TILE_SIZE, TILE_SIZE),
+        )
+
+        # Tiles
+        self.chest_sprite = pygame.transform.scale(
+            safe_load_sprite(os.path.join(ASSETS_DIR, "chest.png"), YELLOW),
+            (TILE_SIZE, TILE_SIZE),
+        )
+        self.stairs_sprite = pygame.transform.scale(
+            safe_load_sprite(os.path.join(ASSETS_DIR, "stairs.png"), PURPLE),
+            (TILE_SIZE, TILE_SIZE),
+        )
 
     def load_highscore(self) -> Optional[float]:
         try:
@@ -264,7 +334,7 @@ class DungeonCrawlerGUI:
             if not has_stairs:
                 # Place stairs on a random empty tile
                 empties = [(x, y) for y in range(self.game_map.height) for x in range(self.game_map.width)
-                           if self.game_map.get_tile(x, y) == TileType.EMPTY.value]
+                        if self.game_map.get_tile(x, y) == TileType.EMPTY.value]
                 if empties:
                     sx, sy = random.choice(empties)
                     self.game_map.set_tile(sx, sy, TileType.STAIRS_DOWN.value)
@@ -274,11 +344,46 @@ class DungeonCrawlerGUI:
         if not self.game_map.is_valid_position(px, py) or self.game_map.get_tile(px, py) == TileType.WALL.value:
             # find empty
             empties = [(x, y) for y in range(self.game_map.height) for x in range(self.game_map.width)
-                       if self.game_map.get_tile(x, y) == TileType.EMPTY.value]
+                    if self.game_map.get_tile(x, y) == TileType.EMPTY.value]
             if empties:
                 px, py = random.choice(empties)
         self.player.x, self.player.y = px, py
         self.game_map.reveal_area(self.player.x, self.player.y)
+
+        # --- Place Player 2 on an empty nearby tile (not same as P1) ---
+        if self.multiplayer:
+            p1x, p1y = self.player.x, self.player.y
+            placed = False
+            # Try immediate neighbors first, then any empty
+            neighbors = [(p1x+1,p1y),(p1x-1,p1y),(p1x,p1y+1),(p1x,p1y-1)]
+            for nx, ny in neighbors:
+                if 0 <= nx < self.game_map.width and 0 <= ny < self.game_map.height:
+                    if self.game_map.get_tile(nx, ny) == TileType.EMPTY.value:
+                        self.player2.x, self.player2.y = nx, ny
+                        placed = True
+                        break
+            if not placed:
+                empties = [(x, y) for y in range(self.game_map.height) for x in range(self.game_map.width)
+                        if self.game_map.get_tile(x, y) == TileType.EMPTY.value and (x, y) != (p1x, p1y)]
+                if empties:
+                    self.player2.x, self.player2.y = random.choice(empties)
+            self.game_map.reveal_area(self.player2.x, self.player2.y)
+        # ---------------------------------------------    
+        # Ensure stairs are not completely surrounded by walls
+        sx, sy = None, None
+        for y in range(self.game_map.height):
+            for x in range(self.game_map.width):
+                if self.game_map.get_tile(x, y) == TileType.STAIRS_DOWN.value:
+                    sx, sy = x, y
+                    break
+            if sx is not None: break
+
+        if sx is not None:
+            neighbors = [(sx+1,sy),(sx-1,sy),(sx,sy+1),(sx,sy-1)]
+            for nx, ny in neighbors:
+                if 0 <= nx < self.game_map.width and 0 <= ny < self.game_map.height:
+                    if self.game_map.get_tile(nx, ny) == TileType.WALL.value:
+                        self.game_map.set_tile(nx, ny, TileType.EMPTY.value)
 
     # ---------- UI Drawing ----------
     def draw_tile(self, x: int, y: int, tile_type: str, visible: bool):
@@ -294,7 +399,7 @@ class DungeonCrawlerGUI:
         elif tile_type == TileType.TREASURE.value:
             self.screen.blit(self.chest_sprite, (screen_x, screen_y))
         elif tile_type == TileType.MONSTER.value:
-            self.screen.blit(self.monster_sprite, (screen_x, screen_y))
+            self.screen.blit(self.monster_sprites.get("goblin", self.monster_sprite), (screen_x, screen_y))
         elif tile_type == TileType.STAIRS_DOWN.value:
             if self.stairs_sprite:
                 self.screen.blit(self.stairs_sprite, (screen_x, screen_y))
@@ -312,9 +417,17 @@ class DungeonCrawlerGUI:
                 visible = self.game_map.visible_map[x][y]
                 self.draw_tile(x, y, tile_type, visible)
         # Draw player
+        # Draw player 1
         px = 50 + self.player.x * TILE_SIZE
         py = 50 + self.player.y * TILE_SIZE
         self.screen.blit(self.player_sprite, (px, py))
+
+        # Draw player 2
+        if self.multiplayer:
+            p2x = 50 + self.player2.x * TILE_SIZE
+            p2y = 50 + self.player2.y * TILE_SIZE
+            self.screen.blit(self.player2_sprite, (p2x, p2y))
+
 
     def draw_ui_panel(self):
         panel_x = SCREEN_WIDTH - UI_PANEL_WIDTH
@@ -329,6 +442,7 @@ class DungeonCrawlerGUI:
         stats_y = 80
         if self.start_time and self.state == GameState.PLAYING:
             self.run_time = time.time() - self.start_time
+        # ... existing stats list ...
         stats = [
             f"Health: {self.player.health}/{self.player.max_health}",
             f"Lvl: {self.player.level}  EXP: {self.player.experience}",
@@ -336,6 +450,14 @@ class DungeonCrawlerGUI:
             f"ATK: {self.player.attack}  DEF: {self.player.defense}",
             f"Time: {self.run_time:.1f}s",
         ]
+        if self.multiplayer:
+            stats += [
+                f"P2 Health: {self.player2.health}/{self.player2.max_health}",
+                f"P2 Lvl: {self.player2.level}  EXP: {self.player2.experience}",
+                f"P2 ATK: {self.player2.attack}  DEF: {self.player2.defense}",
+            ]
+        
+
         for stat in stats:
             text = self.font.render(stat, True, WHITE)
             self.screen.blit(text, (panel_x + 20, stats_y))
@@ -402,6 +524,14 @@ class DungeonCrawlerGUI:
 
             name = f"{item.name} ({item.item_type})"
             desc = item.description
+            if item.item_type == "weapon":
+                desc += f" | +{item.value} ATK"
+            elif item.item_type == "armor":
+                desc += f" | +{item.value} DEF"
+            elif item.item_type == "consumable":
+                desc += f" | Restores {item.value} HP"
+            elif item.item_type == "treasure":
+                desc += " | Sell for gold"
             text1 = self.font.render(name, True, WHITE)
             text2 = self.font.render(desc, True, LIGHT_GRAY)
             self.screen.blit(text1, (row_rect.x + 10, row_rect.y + 6))
@@ -485,18 +615,31 @@ class DungeonCrawlerGUI:
             row_rect = pygame.Rect(panel_x + 20, row_y, panel_w - 40, self.inventory_row_height - 8)
             if row_rect.collidepoint(mouse_pos):
                 item = items[idx]
-                # Treasure => sell; else call player.use_item
-                if item.item_type == "treasure":
-                    self.sell_treasure(item)
-                else:
-                    if self.player.use_item(item.name):
-                        self.add_message(f"Used {item.name}!")
+                # Detect mouse button type
+                if pygame.mouse.get_pressed()[2]:  # Right click → Equip
+                    if item.item_type == "weapon":
+                        self.player.equipped_weapon = item
+                        self.add_message(f"Equipped {item.name}")
+                    elif item.item_type == "armor":
+                        self.player.equipped_armor = item
+                        self.add_message(f"Equipped {item.name}")
+                elif pygame.mouse.get_pressed()[0]:  # Left click → Sell/Use
+                    if item.item_type == "treasure":
+                        self.sell_treasure(item)
                     else:
-                        self.add_message(f"Couldn't use {item.name}.")
+                        if self.player.use_item(item.name):
+                            self.add_message(f"Used {item.name}!")
+                        else:
+                            self.add_message(f"Couldn't use {item.name}.")
                 break
 
     # ---------- Movement / Interactions ----------
     def move_player(self, dx: int, dy: int):
+        if dx == 1: self.player_sprite = self.player_sprites["right"]
+        elif dx == -1: self.player_sprite = self.player_sprites["left"]
+        elif dy == -1: self.player_sprite = self.player_sprites["up"]
+        elif dy == 1: self.player_sprite = self.player_sprites["down"]
+
         new_x = self.player.x + dx
         new_y = self.player.y + dy
         if not self.game_map.is_valid_position(new_x, new_y):
@@ -515,34 +658,59 @@ class DungeonCrawlerGUI:
         self.handle_tile_interaction(tile, new_x, new_y)
         self.game_map.reveal_area(self.player.x, self.player.y)
 
-    def handle_tile_interaction(self, tile: str, x: int, y: int):
+    def move_actor(self, actor: Player, sprite_set: Dict[str, pygame.Surface], dx: int, dy: int):
+        # choose facing sprite
+        if dx == 1:   sprite = sprite_set["right"]
+        elif dx == -1: sprite = sprite_set["left"]
+        elif dy == -1: sprite = sprite_set["up"]
+        else:          sprite = sprite_set["down"]
+
+        # assign to the correct on-screen sprite holder
+        if actor is self.player:
+            self.player_sprite = sprite
+        else:
+            self.player2_sprite = sprite
+
+        new_x, new_y = actor.x + dx, actor.y + dy
+        if not self.game_map.is_valid_position(new_x, new_y):
+            self.add_message("You can't move there!")
+            return
+
+        tile = self.game_map.get_tile(new_x, new_y)
+        if tile == TileType.WALL.value:
+            self.add_message("You can't walk through walls!")
+            return
+
+        self.move_stack.push((actor.x, actor.y))
+        actor.x, actor.y = new_x, new_y
+        self.handle_tile_interaction(actor, tile, new_x, new_y)
+        self.game_map.reveal_area(actor.x, actor.y)
+
+    def handle_tile_interaction(self, actor: Player, tile: str, x: int, y: int):
         if tile == TileType.TREASURE.value:
-            # Choose treasure or useful item
             item_name = random.choice(list(self.items.keys()))
             item = self.items[item_name]
-            self.player.add_item(item)
+            actor.add_item(item)
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
             self.add_message(f"You found Treasure: {item.name}!")
-            # Quest: treasure
             try:
                 self.quest_log.complete_quest("treasure")
             except Exception:
                 pass
 
         elif tile == TileType.MONSTER.value:
-            # On final level, force boss
             if self.game_map.current_level >= MAX_LEVELS:
                 monster = self.monsters["dragon"]
             else:
                 monster_name = random.choice([m for m in self.monsters.keys() if m != "dragon"])
                 monster = self.monsters[monster_name]
+                monster_roar.play()
             self.add_message(f"A {monster.name} appears!")
-            self.combat(monster)
+            self.combat(actor, monster)
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
 
         elif tile == TileType.STAIRS_DOWN.value:
             if self.game_map.current_level >= MAX_LEVELS:
-                # Final floor: stairs act as completion if boss is defeated or no boss present
                 if self.boss_defeated:
                     self.trigger_victory()
                 else:
@@ -550,6 +718,7 @@ class DungeonCrawlerGUI:
             else:
                 self.add_message("You descend deeper...")
                 self.next_level()
+
 
     def grant_quest_rewards(self):
         """Grant rewards the moment a quest flips to completed."""
@@ -574,20 +743,30 @@ class DungeonCrawlerGUI:
                     self.add_message(f"Quest '{q.title}' completed!")
                 self.rewarded_quests.add(q.title)
 
-    def combat(self, monster: Monster):
-        # Clone monster stats so repeated encounters aren't permanently damaged
+    def combat(self, actor: Player, monster: Monster):
         mob = Monster(monster.name, monster.health, monster.attack, monster.defense)
-        while mob.health > 0 and self.player.is_alive():
-            damage = max(1, self.player.attack - mob.defense)
+        sword_sound.play()
+        while mob.health > 0 and actor.is_alive():
+            damage = max(1, actor.attack - mob.defense)
             mob.health -= damage
             self.add_message(f"You deal {damage} to {mob.name}.")
             if mob.health <= 0:
                 self.add_message(f"You defeated {mob.name}!")
-                self.player.experience += 20
+                actor.experience += 20
                 gold_gain = random.randint(10, 30)
-                self.player.gold += gold_gain
+                actor.gold += gold_gain
                 self.add_message(f"Loot: +{gold_gain} gold")
-                # Quest updates
+
+                # Level up check
+                exp_needed = 100 + (actor.level * 10)
+                if actor.experience >= exp_needed:
+                    actor.level += 1
+                    actor.experience -= exp_needed
+                    actor.attack += 2
+                    actor.defense += 2
+                    self.add_message(f"LEVEL UP! Now level {actor.level} (ATK+2, DEF+2)")
+                    levelup_sound.play()
+
                 try:
                     self.quest_log.complete_quest(mob.name.lower())
                 except Exception:
@@ -595,19 +774,22 @@ class DungeonCrawlerGUI:
                 if mob.name.lower() == "dragon":
                     self.boss_defeated = True
                 break
+
             # Monster attacks
-            mdmg = max(1, mob.attack - self.player.defense)
-            self.player.take_damage(mdmg)
+            mdmg = max(1, mob.attack - actor.defense)
+            actor.take_damage(mdmg)
             self.add_message(f"{mob.name} hits you for {mdmg}.")
-            if not self.player.is_alive():
+            if not actor.is_alive():
                 break
 
-        if not self.player.is_alive():
+        # Coop: game over only if both players are down
+        if not self.player.is_alive() and (not self.multiplayer or not self.player2.is_alive()):
             self.add_message("dead: You have fallen.")
             self.state = GameState.GAME_OVER
         else:
-            self.add_message(f"Your health: {self.player.health}")
+            self.add_message(f"Your health: {actor.health}")
         self.grant_quest_rewards()
+
 
     def undo_move(self):
         if self.move_stack.is_empty():
@@ -675,6 +857,15 @@ class DungeonCrawlerGUI:
         self.state = GameState.PLAYING
         self.start_time = time.time()
 
+        # --- BGM ---
+        try:
+            pygame.mixer.music.load(os.path.join(ASSETS_DIR, "bg.mp3")) 
+            pygame.mixer.music.set_volume(0.5)
+            pygame.mixer.music.play(-1)  # loop forever
+        except Exception:
+            pass
+
+
     def handle_play_events(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
@@ -682,16 +873,27 @@ class DungeonCrawlerGUI:
                     self.show_inventory = False
                     self.show_quests = False
                 else:
-                    # Pause back to menu?
                     self.state = GameState.MENU
-            elif event.key in (pygame.K_w, pygame.K_UP):
-                self.move_player(0, -1)
-            elif event.key in (pygame.K_s, pygame.K_DOWN):
-                self.move_player(0, 1)
-            elif event.key in (pygame.K_a, pygame.K_LEFT):
-                self.move_player(-1, 0)
-            elif event.key in (pygame.K_d, pygame.K_RIGHT):
-                self.move_player(1, 0)
+
+            # Player 1 (WASD)
+            elif event.key == pygame.K_w:
+                self.move_actor(self.player, self.player_sprites, 0, -1)
+            elif event.key == pygame.K_s:
+                self.move_actor(self.player, self.player_sprites, 0, 1)
+            elif event.key == pygame.K_a:
+                self.move_actor(self.player, self.player_sprites, -1, 0)
+            elif event.key == pygame.K_d:
+                self.move_actor(self.player, self.player_sprites, 1, 0)
+
+            # Player 2 (Arrows)
+            elif self.multiplayer and event.key == pygame.K_UP:
+                self.move_actor(self.player2, self.player2_sprites, 0, -1)
+            elif self.multiplayer and event.key == pygame.K_DOWN:
+                self.move_actor(self.player2, self.player2_sprites, 0, 1)
+            elif self.multiplayer and event.key == pygame.K_LEFT:
+                self.move_actor(self.player2, self.player2_sprites, -1, 0)
+            elif self.multiplayer and event.key == pygame.K_RIGHT:
+                self.move_actor(self.player2, self.player2_sprites, 1, 0)
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
@@ -763,7 +965,7 @@ class DungeonCrawlerGUI:
         t1 = self.title_font.render("Dungeon Completed!", True, GOLD)
         self.screen.blit(t1, t1.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 60)))
         t2 = self.font.render(f"Time: {self.run_time:.1f}s   Best: {self.highscore:.1f}s" if self.highscore else f"Time: {self.run_time:.1f}s",
-                              True, WHITE)
+                            True, WHITE)
         self.screen.blit(t2, t2.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
         t3 = self.font.render("Click or press any key to return to Main Menu", True, WHITE)
         self.screen.blit(t3, t3.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 40)))
@@ -812,6 +1014,10 @@ class DungeonCrawlerGUI:
 
             pygame.display.flip()
             self.clock.tick(60)
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
 
         pygame.quit()
 
