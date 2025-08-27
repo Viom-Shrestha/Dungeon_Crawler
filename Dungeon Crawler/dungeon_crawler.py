@@ -3,6 +3,21 @@ import time
 from typing import List, Tuple, Optional, Dict, Any
 from enum import Enum
 
+BASE_MONSTERS = {
+    "lizard": {"health": 30, "attack": 8, "defense": 3, "sprite": "lizard.png", "exp": 15, "gold": 10},
+    "snake": {"health": 40, "attack": 12, "defense": 6, "sprite": "snake.png", "exp": 16, "gold": 11},
+    "jinn": {"health": 50, "attack": 15, "defense": 8, "sprite": "jinn.png", "exp": 40, "gold": 30},
+    "demon": {"health": 60, "attack": 18, "defense": 10, "sprite": "demon.png", "exp": 50, "gold": 40},
+    "dragon": {"health": 110, "attack": 20, "defense": 16, "sprite": "dragon.png", "exp": 200, "gold": 200},
+}
+    
+MAP_SIZES = {
+    "easy": (15, 10),
+    "normal": (20, 15),
+    "hard": (25, 20),
+}
+
+
 class TileType(Enum):
     EMPTY = " "
     WALL = "#"
@@ -19,6 +34,39 @@ class Item:
         self.value = value
         self.item_type = item_type  # "weapon", "armor", "consumable"
         self.effect_value = effect_value
+    
+    def use(self, target: "Player") -> str:
+        if self.item_type == "weapon":
+            if target.equipped_weapon:
+                target.attack -= target.equipped_weapon.effect_value
+                target.inventory.append(target.equipped_weapon)
+            target.equipped_weapon = self
+            target.attack += self.effect_value
+            target.inventory.remove(self)
+            return f"{target.name} equipped {self.name} (+{self.effect_value} ATK)"
+
+        elif self.item_type == "armor":
+            if target.equipped_armor:
+                target.defense -= target.equipped_armor.effect_value
+                target.inventory.append(target.equipped_armor)
+            target.equipped_armor = self
+            target.defense += self.effect_value
+            target.inventory.remove(self)
+            return f"{target.name} equipped {self.name} (+{self.effect_value} DEF)"
+
+        elif self.item_type == "consumable":
+            heal = int(getattr(self, "effect_value", 0))
+            target.health = min(target.max_health, target.health + heal)
+            target.inventory.remove(self)
+            return f"{target.name} healed +{heal} HP"
+
+        return f"{self.name} cannot be used."
+
+    def sell(self, target: "Player") -> str:
+        value = int(getattr(self, "value", 10))
+        target.gold += value
+        target.inventory.remove(self)
+        return f"{target.name} sold {self.name} for {value} gold"
 
 class Monster:
     def __init__(self, name: str, health: int, attack: int, defense: int, sprite: Optional[str] = None):
@@ -30,14 +78,14 @@ class Monster:
         self.sprite = sprite  # New attribute for the sprite name
 
 class Quest:
-    def __init__(self, title: str, description: str, target: str, reward: str):
+    def __init__(self, title: str, description: str, target: str, reward: Dict[str, Any]):
         self.title = title
         self.description = description
         self.target = target
-        self.reward = reward
+        self.reward = reward  
         self.completed = False
 
-# Linked List Node for Quest Log
+# Linked List Node for Quest
 class QuestNode:
     def __init__(self, quest: Quest):
         self.quest = quest
@@ -118,9 +166,10 @@ class ActionQueue:
         return len(self.actions)
 
 class Player:
-    def __init__(self, x: int, y: int):
+    def __init__(self, x: int, y: int, name: str = "Hero"):
         self.x = x
         self.y = y
+        self.name = name
         self.health = 100
         self.max_health = 100
         self.base_attack = 15
@@ -378,24 +427,9 @@ class DungeonCrawler:
         self.game_map.reveal_area(self.player.x, self.player.y)
     
     def get_map_size_by_difficulty(self) -> Tuple[int, int]:
-        """Get map dimensions based on difficulty"""
-        if self.difficulty == "easy":
-            return (15, 10)
-        elif self.difficulty == "hard":
-            return (25, 20)
-        else:  # normal
-            return (20, 15)
+        return MAP_SIZES.get(self.difficulty, MAP_SIZES["normal"])
     
-    def create_monsters(self) -> Dict[str, Monster]:
-        """Create monsters with difficulty-based scaling"""
-        base_monsters = {
-            "lizard": {"health": 30, "attack": 8, "defense": 3, "sprite": "lizard.png"},
-            "snake": {"health": 50, "attack": 12, "defense": 6, "sprite": "snake.png"},
-            "jinn": {"health": 60, "attack": 13, "defense": 8, "sprite": "jinn.png"},
-            "demon": {"health": 70, "attack": 18, "defense": 9, "sprite": "demon.png"},
-            "dragon": {"health": 100, "attack": 20, "defense": 15, "sprite": "dragon.png"}
-        }
-        
+    def create_monsters(self) -> Dict[str, Monster]:        
         # Scale monster stats based on difficulty
         scale_factor = 1.0
         if self.difficulty == "easy":
@@ -404,7 +438,7 @@ class DungeonCrawler:
             scale_factor = 1.5
         
         monsters = {}
-        for name, stats in base_monsters.items():
+        for name, stats in BASE_MONSTERS.items():
             scaled_health = int(stats["health"] * scale_factor)
             scaled_attack = int(stats["attack"] * scale_factor)
             scaled_defense = int(stats["defense"] * scale_factor)
@@ -414,7 +448,6 @@ class DungeonCrawler:
         return monsters
     
     def create_items(self) -> Dict[str, Item]:
-        """Create items with enhanced variety"""
         return {
             "sword": Item("Iron Sword", "A sharp iron sword", 50, "weapon", 5),
             "steel_sword": Item("Steel Sword", "A superior steel sword", 80, "weapon", 8),
@@ -426,15 +459,17 @@ class DungeonCrawler:
             "greater_potion": Item("Greater Health Potion", "Restores 50 health", 50, "consumable", 50),
             "super_potion": Item("Super Health Potion", "Restores 100 health", 100, "consumable", 100),
         }
+    @staticmethod
+    def get_default_quests():
+        return [
+            Quest("Jinn Hunter", "Defeat 1 demon", "jinn", {"gold": 50}),
+            Quest("Treasure Collector", "Collect 1 treasures", "treasure", {"item": "steel_sword"}),
+            Quest("Demon Slayer", "Defeat the dragon", "demon", {"item": "magic_shield"})
+        ]
     
     def initialize_quests(self):
-        quest1 = Quest("Goblin Hunter", "Defeat 3 goblins", "goblin", "Gold and experience")
-        quest2 = Quest("Treasure Collector", "Collect 5 treasures", "treasure", "Rare weapon")
-        quest3 = Quest("Dragon Slayer", "Defeat the dragon", "dragon", "Legendary armor")
-        
-        self.quest_log.add_quest(quest1)
-        self.quest_log.add_quest(quest2)
-        self.quest_log.add_quest(quest3)
+        for quest in DungeonCrawler.get_default_quests():
+            self.quest_log.add_quest(quest)
     
     def process_command(self, command: str):
         """Main command processing function with loops"""
@@ -510,9 +545,10 @@ class DungeonCrawler:
             self.player.add_item(item)
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
             
-            # Check quest completion
-            self.quest_log.complete_quest("treasure")
-        
+            quest = self.quest_log.complete_quest("treasure")
+            if quest:
+                self.grant_quest_reward(quest)
+   
         elif tile.startswith(TileType.MONSTER.value):
             parts = tile.split(":")
             if len(parts) > 1:
@@ -523,13 +559,24 @@ class DungeonCrawler:
             monster = self.monsters[monster_name]
             print(f"A {monster.name} appears!")
             self.combat(monster)
+            self.check_level_up()
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
 
         
         elif tile == TileType.STAIRS_DOWN.value:
             print("You found stairs leading deeper into the dungeon!")
             self.next_level()
-    
+        
+    def check_level_up(self):
+        exp_needed = 50 + (self.player.level * 10)
+        if self.player.experience >= exp_needed:
+            self.player.level += 1
+            self.player.experience -= exp_needed
+            self.player.max_health += 10
+            self.player.base_attack += 2
+            self.player.base_defense += 2
+            print(f"LEVEL UP! You are now level {self.player.level}!")
+
     def combat(self, monster: Monster):
         """Combat system"""
         print(f"\n=== COMBAT: {monster.name} ===")
@@ -546,7 +593,9 @@ class DungeonCrawler:
                 self.player.gold += random.randint(10, 30)
                 
                 # Check quest completion
-                self.quest_log.complete_quest(monster.name.lower())
+                quest = self.quest_log.complete_quest(monster.name.lower())
+                if quest:
+                    self.grant_quest_reward(quest)
                 break
             
             # Monster attacks
@@ -560,7 +609,24 @@ class DungeonCrawler:
         
         if self.player.is_alive():
             print(f"Combat ended. Your health: {self.player.health}")
-    
+
+    def grant_quest_rewards(self):
+        for q in self.quest_log.get_quests():
+            if getattr(q, "completed", False) and q.title not in self.rewarded_quests:
+                reward = q.reward
+                if isinstance(reward, dict):
+                    if "gold" in reward:
+                        self.player.gold += reward["gold"]
+                        self.add_message(f"Quest '{q.title}' reward: +{reward['gold']} Gold")
+                    if "exp" in reward:
+                        self.player.experience += reward["exp"]
+                        self.add_message(f"Quest '{q.title}' reward: +{reward['exp']} EXP")
+                    if "item" in reward and reward["item"] in self.items:
+                        self.player.add_item(self.items[reward["item"]])
+                        self.add_message(f"Quest '{q.title}' reward: {self.items[reward['item']].name}")
+                self.rewarded_quests.add(q.title)
+        print(f"Quest Completed: {q.title}")
+
     def process_monster_turns(self):
         """Process monster actions using queue"""
         # Add monster actions to queue

@@ -39,7 +39,7 @@ monster_roar = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "monster_roar.mp3"))
 levelup_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "levelup.mp3"))
 # Import your existing classes
 from dungeon_crawler import (
-    TileType, Item, Monster, Quest, QuestLog,
+    TileType, Item, Monster, Quest, QuestLog, MAP_SIZES, BASE_MONSTERS,
     MoveStack, ActionQueue, Player, GameMap, DungeonCrawler
 )
 
@@ -96,7 +96,7 @@ class DungeonCrawlerGUI:
     def __init__(self, difficulty: str = "normal"):
         self.difficulty = difficulty
         self.map_size = self.get_map_size_by_difficulty()
-        self.player = Player(1, 1)
+        self.player = Player(1, 1, "P1")
         self.monsters = self.create_monsters()
         self.game_map = GameMap(self.map_size[0], self.map_size[1], difficulty)
         self.quest_log = QuestLog()
@@ -121,6 +121,13 @@ class DungeonCrawlerGUI:
         self.highscore = self.load_highscore()
         self.rewarded_quests = set()  # track rewards given
         self.boss_defeated = False
+        self.draw_funcs = {
+            GameState.LOADING: self.draw_loading,
+            GameState.MENU: self.draw_menu,
+            GameState.PLAYING: self.draw_playing,
+            GameState.GAME_OVER: self.draw_game_over,
+            GameState.VICTORY: self.draw_victory,
+        }
 
         # Pygame setup
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -139,7 +146,7 @@ class DungeonCrawlerGUI:
 
         # --- Multiplayer setup ---
         self.multiplayer = True  # set False to disable 2P
-        self.player2 = Player(1, 1)
+        self.player2 = Player(1, 1, "P2")
         self.player2_sprites = {}
         self.player_sprite = None
         self.player2_sprite = None
@@ -245,22 +252,9 @@ class DungeonCrawlerGUI:
             pass
 
     def get_map_size_by_difficulty(self) -> Tuple[int, int]:
-        if self.difficulty == "easy":
-            return (15, 10)
-        elif self.difficulty == "hard":
-            return (25, 20)
-        else:  # normal
-            return (20, 15)
+        return MAP_SIZES.get(self.difficulty, MAP_SIZES["normal"])
 
     def create_monsters(self) -> Dict[str, Monster]:
-        base_monsters = {
-            "lizard": {"health": 30, "attack": 8, "defense": 3, "sprite": "lizard.png", "exp": 15, "gold": 10},
-            "snake": {"health": 40, "attack": 12, "defense": 6, "sprite": "snake.png", "exp": 16, "gold": 11},
-            "jinn": {"health": 50, "attack": 15, "defense": 8, "sprite": "jinn.png", "exp": 40, "gold": 30},
-            "demon": {"health": 60, "attack": 18, "defense": 10, "sprite": "demon.png", "exp": 50, "gold": 40},
-            "dragon": {"health": 110, "attack": 20, "defense": 16, "sprite": "dragon.png", "exp": 200, "gold": 200},
-        }
-
         scale_factor = 1.0
         if self.difficulty == "easy":
             scale_factor = 0.7
@@ -268,7 +262,7 @@ class DungeonCrawlerGUI:
             scale_factor = 1.5
 
         monsters: Dict[str, Monster] = {}
-        for name, stats in base_monsters.items():
+        for name, stats in BASE_MONSTERS.items():
             scaled_health = int(stats["health"] * scale_factor)
             scaled_attack = int(stats["attack"] * scale_factor)
             scaled_defense = int(stats["defense"] * scale_factor)
@@ -283,21 +277,18 @@ class DungeonCrawlerGUI:
         return monsters
 
     def initialize_quests(self):
-        quest1 = Quest("lizard Hunter", "Defeat 3 lizards", "lizard", "50 Gold")
-        quest2 = Quest("Treasure Collector", "Collect 5 treasures", "treasure", "Rare weapon")
-        quest3 = Quest("Dragon Slayer", "Defeat the dragon", "dragon", "Legendary armor")
-        self.quest_log.add_quest(quest1)
-        self.quest_log.add_quest(quest2)
-        self.quest_log.add_quest(quest3)
+        for quest in DungeonCrawler.get_default_quests():
+            self.quest_log.add_quest(quest)
 
     def create_menu_buttons(self):
         cx = SCREEN_WIDTH // 2
         start_y = SCREEN_HEIGHT // 2 - 40
         self.menu_buttons = [
-            Button(cx - 120, start_y - 80, 240, 50, "Start Game", GREEN, (0, 200, 0), 36),
-            Button(cx - 120, start_y, 240, 50, f"Difficulty: {self.difficulties[self.difficulty_index].capitalize()}", BLUE, (0, 0, 200), 32),
-            Button(cx - 120, start_y + 80, 240, 50, "Quit", RED, (200, 0, 0), 36),
-        ]
+            Button(cx - 120, start_y - 120, 240, 50, "Start Game", GREEN, (0, 200, 0), 36),
+            Button(cx - 120, start_y - 40, 240, 50, f"Difficulty: {self.difficulties[self.difficulty_index].capitalize()}", BLUE, (0, 0, 200), 32),
+            Button(cx - 120, start_y + 40, 240, 50, f"Multiplayer: {'On' if self.multiplayer else 'Off'}", ORANGE, (200, 120, 0), 32),
+            Button(cx - 120, start_y + 120, 240, 50, "Quit", RED, (200, 0, 0), 36),
+    ]
 
     def create_play_buttons(self):
         btn_y = SCREEN_HEIGHT - 100
@@ -641,10 +632,6 @@ class DungeonCrawlerGUI:
         self.add_message(f"Sold treasure '{item.name}' for {int(value)} gold!")
 
     def use_item_click(self, mouse_pos, button: int):
-        """
-        mouse_pos: (x,y)
-        button: 1 (left), 3 (right)
-        """
         if not self.show_inventory:
             return
         panel_x = SCREEN_WIDTH // 2 - 250
@@ -680,103 +667,23 @@ class DungeonCrawlerGUI:
                     self.add_message(f"Cannot use or equip items on {self.inventory_target_names[self.active_player]} — they are dead.")
                     return
 
-                # Left click → equip/assign to active player
-                if button == 1:
-                    if item.item_type == "weapon":
-                        if target.equipped_weapon:
-                            target.attack -= target.equipped_weapon.effect_value
-                            target.inventory.append(target.equipped_weapon)
-                        target.equipped_weapon = item
-                        target.attack += item.effect_value
-                        target.remove_item(item.name)
-                        self.add_message(f"{self.inventory_target_names[self.active_player]} equipped {item.name} (+{item.value} ATK)")
-
-                    elif item.item_type == "armor":
-                        if target.equipped_armor:
-                            target.defense -= target.equipped_armor.effect_value
-                            target.inventory.append(target.equipped_armor)
-                        target.equipped_armor = item
-                        target.defense += item.effect_value
-                        target.remove_item(item.name)
-                        self.add_message(f"{self.inventory_target_names[self.active_player]} equipped {item.name} (+{item.value} DEF)")
-                    else:
-                        # non-equipable on left click — maybe use it instead
-                        if getattr(target, "use_item", None):
-                            used = target.use_item(item.name)
-                            if used:
-                                self.add_message(f"{self.inventory_target_names[self.active_player]} used {item.name}")
-                            else:
-                                self.add_message(f"Couldn't use {item.name} on {self.inventory_target_names[self.active_player]}.")
-                # Right click → sell (treasure) or use on active player
-                elif button == 3:
-                    if item.item_type == "treasure":
-                        # sell (shared gold goes to P1 by default)
-                        value = int(item.value if hasattr(item, "value") else 50)
-                        # give gold to active player
-                        target.gold += value
-                        # remove from shared inventory
-                        target.remove_item(item.name)
-                        self.add_message(f"{self.inventory_target_names[self.active_player]} sold {item.name} for {value} gold.")
-                    else:
-                        # Use consumable on target
-                        if item.item_type == "consumable":
-                            # call player's use_item method if present
-                            if getattr(target, "use_item", None):
-                                used = target.use_item(item.name)
-                                if used:
-                                    self.add_message(f"{self.inventory_target_names[self.active_player]} used {item.name}.")
-                                else:
-                                    self.add_message(f"Couldn't use {item.name} on {self.inventory_target_names[self.active_player]}.")
-                            else:
-                                # fallback behavior: heal by item's value
-                                heal = int(getattr(item, "effect_value", 0))
-                                target.health = min(target.max_health, target.health + heal)
-                                target.remove_item(item.name)
-                                self.add_message(f"{self.inventory_target_names[self.active_player]} healed +{heal} HP.")
-                        else:
-                            # non-consumable non-treasure left-click: sell by default
-                            value = int(item.value if hasattr(item, "value") else 10)
-                            target.gold += value
-                            target.remove_item(item.name)
-                            self.add_message(f"{self.inventory_target_names[self.active_player]} sold {item.name} for {value} gold.")
+                if button == 1:  # left click
+                    msg = item.use(target)
+                    self.add_message(msg)
+                elif button == 3:  # right click
+                    msg = item.sell(target)
+                    self.add_message(msg)
                 break
-
-
-    # ---------- Movement / Interactions ----------
-    def move_player(self, dx: int, dy: int):
-        if dx == 1: self.player_sprite = self.player_sprites["right"]
-        elif dx == -1: self.player_sprite = self.player_sprites["left"]
-        elif dy == -1: self.player_sprite = self.player_sprites["up"]
-        elif dy == 1: self.player_sprite = self.player_sprites["down"]
-
-        new_x = self.player.x + dx
-        new_y = self.player.y + dy
-        if not self.game_map.is_valid_position(new_x, new_y):
-            self.add_message("You can't move there!")
-            return
-
-        tile = self.game_map.get_tile(new_x, new_y)
-        if tile == TileType.WALL.value:
-            self.add_message("You can't walk through walls!")
-            return
-
-        self.move_stack.push((self.player.x, self.player.y))
-        self.player.x, self.player.y = new_x, new_y
-        self.handle_tile_interaction(self.player, tile, new_x, new_y)
-        self.game_map.reveal_area(self.player.x, self.player.y)
 
     def move_actor(self, actor: Player, sprite_set: Dict[str, pygame.Surface], dx: int, dy: int):
         if not actor.is_alive():
             self.add_message(f"{'P1' if actor is self.player else 'P2'} is dead and cannot move.")
             return
-
-# choose facing sprite
         if dx == 1:   sprite = sprite_set["right"]
         elif dx == -1: sprite = sprite_set["left"]
         elif dy == -1: sprite = sprite_set["up"]
         else:          sprite = sprite_set["down"]
 
-        # assign to the correct on-screen sprite holder
         if actor is self.player:
             self.player_sprite = sprite
         else:
@@ -805,7 +712,9 @@ class DungeonCrawlerGUI:
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
             self.add_message(f"You found Treasure: {item.name}!")
             try:
-                self.quest_log.complete_quest("treasure")
+                quest = self.quest_log.complete_quest("treasure")
+                if quest:
+                    self.grant_quest_rewards()
             except Exception:
                 pass
 
@@ -821,8 +730,8 @@ class DungeonCrawlerGUI:
             monster_roar.play()
             self.add_message(f"A {monster.name} appears!")
             self.combat(actor, monster)
+            self.check_level_up(actor)
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
-
 
         elif tile == TileType.STAIRS_DOWN.value:
             if self.game_map.current_level >= MAX_LEVELS:
@@ -834,29 +743,31 @@ class DungeonCrawlerGUI:
                 self.add_message("You descend deeper...")
                 self.next_level()
 
-
     def grant_quest_rewards(self):
-        """Grant rewards the moment a quest flips to completed."""
         for q in self.quest_log.get_quests():
             if getattr(q, "completed", False) and q.title not in self.rewarded_quests:
-                reward_text = str(getattr(q, "reward", ""))
-                # Simple parsing for gold
-                if "Gold" in reward_text:
-                    try:
-                        amt = int(''.join(ch for ch in reward_text if ch.isdigit()))
-                        self.player.gold += amt
-                        self.add_message(f"Quest '{q.title}' reward: +{amt} Gold")
-                    except Exception:
-                        self.add_message(f"Quest '{q.title}' completed!")
-                elif "weapon" in reward_text.lower():
-                    self.player.add_item(self.items["steel_sword"])
-                    self.add_message(f"Quest '{q.title}' reward: Steel Sword")
-                elif "armor" in reward_text.lower():
-                    self.player.add_item(self.items["magic_shield"])
-                    self.add_message(f"Quest '{q.title}' reward: Magic Shield")
-                else:
-                    self.add_message(f"Quest '{q.title}' completed!")
+                reward = q.reward
+                if isinstance(reward, dict):
+                    if "gold" in reward:
+                        self.player.gold += reward["gold"]
+                        self.add_message(f"Quest '{q.title}' reward: +{reward['gold']} Gold")
+                    if "exp" in reward:
+                        self.player.experience += reward["exp"]
+                        self.add_message(f"Quest '{q.title}' reward: +{reward['exp']} EXP")
+                    if "item" in reward and reward["item"] in self.items:
+                        self.player.add_item(self.items[reward["item"]])
+                        self.add_message(f"Quest '{q.title}' reward: {self.items[reward['item']].name}")
                 self.rewarded_quests.add(q.title)
+
+    def check_level_up(self, actor: Player):
+        exp_needed = 50 + (actor.level * 10)
+        if self.player.experience >= exp_needed:
+            self.player.level += 1
+            self.player.experience -= exp_needed
+            self.player.max_health += 10
+            self.player.base_attack += 2
+            self.player.base_defense += 2
+            print(f"LEVEL UP! You are now level {actor.level}!")
 
     def combat(self, actor: Player, monster: Monster):
         mob = Monster(monster.name, monster.health, monster.attack, monster.defense)
@@ -878,18 +789,10 @@ class DungeonCrawlerGUI:
                 self.add_message(f"Rewards: +{exp_gain} EXP, +{gold_gain} Gold")
                 self.add_message(f"Loot: +{gold_gain} gold")
 
-                # Level up check
-                exp_needed = 50 + (actor.level * 10)
-                if actor.experience >= exp_needed:
-                    actor.level += 1
-                    actor.experience -= exp_needed
-                    actor.attack += 2
-                    actor.defense += 2
-                    self.add_message(f"LEVEL UP! Now level {actor.level} (ATK+2, DEF+2)")
-                    levelup_sound.play()
-
                 try:
-                    self.quest_log.complete_quest(mob.name.lower())
+                    quest = self.quest_log.complete_quest(mob.name.lower())
+                    if quest:
+                        self.grant_quest_rewards()
                 except Exception:
                     pass
                 if mob.name.lower() == "dragon":
@@ -963,6 +866,9 @@ class DungeonCrawlerGUI:
                     b.text = f"Difficulty: {self.difficulty.capitalize()}"
                     # Update map size scaling preview
                     self.map_size = self.get_map_size_by_difficulty()
+                elif b.text.startswith("Multiplayer"):
+                    self.multiplayer = not self.multiplayer
+                    b.text = f"Multiplayer: {'On' if self.multiplayer else 'Off'}"
                 elif b.text == "Quit":
                     self.state = GameState.QUIT
 
@@ -971,15 +877,15 @@ class DungeonCrawlerGUI:
         self.rewarded_quests.clear()
         self.difficulty = self.difficulties[self.difficulty_index]
         self.map_size = self.get_map_size_by_difficulty()
-        self.player = Player(1, 1)  # fresh player per your base classes
-        # Make both players share the same inventory object
+
+        self.player = Player(1, 1, name="P1")  # fresh player
         self.player.inventory = []
-        if self.multiplayer:
-            self.player2.inventory = self.player.inventory
-        # Reset equipped items
         self.player.equipped_weapon = None
         self.player.equipped_armor = None
+
         if self.multiplayer:
+            self.player2 = Player(1, 1, name="P2")  # recreate P2 properly
+            self.player2.inventory = self.player.inventory
             self.player2.equipped_weapon = None
             self.player2.equipped_armor = None
 
@@ -1119,6 +1025,26 @@ class DungeonCrawlerGUI:
         self.screen.blit(t2, t2.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
         t3 = self.font.render("Click or press any key to return to Main Menu", True, WHITE)
         self.screen.blit(t3, t3.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 40)))
+
+    def draw_playing(self):
+        if not self.player.is_alive():
+            self.add_message("dead: You have been defeated.")
+            self.state = GameState.GAME_OVER
+            return
+
+        self.screen.fill(BLACK)
+        self.draw_map()
+        self.draw_ui_panel()
+        self.draw_buttons()
+
+        if self.show_inventory:
+            self.draw_inventory()
+        if self.show_quests:
+            self.draw_quests()
+
+        controls_text = "WASD / Arrows: Move | ESC: Close/Back"
+        controls = self.font.render(controls_text, True, LIGHT_GRAY)
+        self.screen.blit(controls, (20, SCREEN_HEIGHT - 30))
 
     # ---------- Main Loop ----------
     def run(self):
