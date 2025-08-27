@@ -677,16 +677,16 @@ class DungeonCrawlerGUI:
 
     def check_level_up(self, actor: Player):
         exp_needed = 50 + (actor.level * 10)
-        if self.player.experience >= exp_needed:
-            self.player.level += 1
-            self.player.experience -= exp_needed
-            self.player.max_health += 10
-            self.player.base_attack += 2
-            self.player.base_defense += 2
+        if actor.experience >= exp_needed:
+            actor.level += 1
+            actor.experience -= exp_needed
+            actor.max_health += 10
+            actor.base_attack += 2
+            actor.base_defense += 2
             print(f"LEVEL UP! You are now level {actor.level}!")
             self.add_message(f"{'P1' if actor is self.player else 'P2'} leveled up to {actor.level}!")
             # Heal a bit on level up    
-            self.player.health = self.player.max_health
+            actor.health = self.player.max_health
 
     def move_actor(self, actor: Player, sprite_set: Dict[str, pygame.Surface], dx: int, dy: int):
         if not actor.is_alive():
@@ -810,18 +810,18 @@ class DungeonCrawlerGUI:
                 break
 
         # End-of-combat: only set GAME_OVER if both players are dead (coop)
-        if not self.player.is_alive() and (not self.multiplayer or not self.player2.is_alive()):
-            self.add_message("dead: Both adventurers have fallen.")
-            self.state = GameState.GAME_OVER
-        else:
-            # If the actor that fought is dead, print dead message for them but allow P2 to continue moving
-            if not actor.is_alive():
-                self.add_message(f"{'P1' if actor is self.player else 'P2'} has fallen and cannot use items or equip gear.")
+            if not self.player.is_alive() and (not self.multiplayer or not (self.player2 and self.player2.is_alive())):
+                self.add_message("dead: Both adventurers have fallen.")
+                self.state = GameState.GAME_OVER
             else:
-                self.add_message(f"{'P1' if actor is self.player else 'P2'} health: {actor.health}")
+                # If the actor that fought is dead, print dead message for them but allow P2 to continue moving
+                if not actor.is_alive():
+                    self.add_message(f"{'P1' if actor is self.player else 'P2'} has fallen and cannot use items or equip gear.")
+                else:
+                    self.add_message(f"{'P1' if actor is self.player else 'P2'} health: {actor.health}")
 
-        self.grant_quest_rewards()
-
+            self.check_level_up(actor)
+            self.grant_quest_rewards()
 
     def undo_move(self):
         if self.move_stack.is_empty():
@@ -1030,7 +1030,7 @@ class DungeonCrawlerGUI:
         self.screen.blit(t3, t3.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 40)))
 
     def draw_playing(self):
-        if not self.player.is_alive():
+        if not self.player.is_alive() and self.player2 and not self.player2.is_alive():
             self.add_message("dead: You have been defeated.")
             self.state = GameState.GAME_OVER
             return
@@ -1064,13 +1064,10 @@ class DungeonCrawlerGUI:
 
             elif self.state == GameState.MENU:
                 self.draw_menu()
-
             elif self.state == GameState.PLAYING:
-                # Death check
-                if not self.player.is_alive():
-                    self.add_message("dead: You have been defeated.")
+                if not self.player.is_alive() and (not self.multiplayer or not self.player2.is_alive()):
                     self.state = GameState.GAME_OVER
-
+                    
                 self.screen.fill(BLACK)
                 self.draw_map()
                 self.draw_ui_panel()
