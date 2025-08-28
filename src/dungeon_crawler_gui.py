@@ -1,4 +1,4 @@
-
+#Author Viom Shrestha
 import pygame
 import random
 import time
@@ -503,9 +503,22 @@ class DungeonCrawlerGUI:
         if self.message_log:
             messages = self.message_log[-5:]
             message_y += 30
-            for i, message in enumerate(messages):
-                msg = self.font.render(f"• {message}", True, LIGHT_GRAY)
-                self.screen.blit(msg, (panel_x + 20, message_y + i * 22))
+            for message in messages:
+                words = message.split(" ")
+                current_line = ""
+                for word in words:
+                    test_line = current_line + word + " "
+                    if self.font.size(test_line)[0] > UI_PANEL_WIDTH - 40:
+                        line_surface = self.font.render(f"• {current_line.strip()}", True, LIGHT_GRAY)
+                        self.screen.blit(line_surface, (panel_x + 20, message_y))
+                        message_y += self.font.get_height() + 2
+                        current_line = word + " "
+                    else:
+                        current_line = test_line
+                if current_line:
+                    line_surface = self.font.render(f"• {current_line.strip()}", True, LIGHT_GRAY)
+                    self.screen.blit(line_surface, (panel_x + 20, message_y))
+                    message_y += self.font.get_height() + 2
 
     def draw_buttons(self):
         for button in self.play_buttons:
@@ -1067,7 +1080,7 @@ class DungeonCrawlerGUI:
             elif self.state == GameState.PLAYING:
                 if not self.player.is_alive() and (not self.multiplayer or not self.player2.is_alive()):
                     self.state = GameState.GAME_OVER
-                    
+
                 self.screen.fill(BLACK)
                 self.draw_map()
                 self.draw_ui_panel()

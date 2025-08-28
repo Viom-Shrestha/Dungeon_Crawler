@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#author Viom Shrestha
 """
 Dungeon Crawler Launcher
 Choose between text-based and GUI versions of the game

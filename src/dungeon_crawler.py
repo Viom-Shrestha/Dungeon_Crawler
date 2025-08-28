@@ -1,3 +1,4 @@
+#Author Viom Shrestha
 import random
 import time
 from typing import List, Tuple, Optional, Dict, Any
@@ -327,11 +328,11 @@ class GameMap:
             treasure_count = 3
             monster_count = 2
         elif self.difficulty == "hard":
-            wall_count = self.width * self.height // 6
+            wall_count = self.width * self.height // 8
             treasure_count = 7
             monster_count = 5
         else:  # normal
-            wall_count = self.width * self.height // 8
+            wall_count = self.width * self.height // 10
             treasure_count = 5
             monster_count = 3
         
@@ -354,14 +355,23 @@ class GameMap:
             y = random.randint(1, self.height-2)
             if self.map_data[y][x] == TileType.EMPTY.value:
                 self.map_data[y][x] = TileType.MONSTER.value  # just plain "M"
-
-        
         # Add stairs
         x = random.randint(1, self.width-2)
         y = random.randint(1, self.height-2)
         if self.map_data[y][x] == TileType.EMPTY.value:
             self.map_data[y][x] = TileType.STAIRS_DOWN.value
-    
+        # If this is level 10, ensure there's exactly one dragon tile somewhere
+        if self.current_level == 10:
+            tries = 0
+            placed = False
+            while tries < 500 and not placed:
+                x = random.randint(1, self.width - 2)
+                y = random.randint(1, self.height - 2)
+                if self.map_data[y][x] == TileType.EMPTY.value:
+                    self.map_data[y][x] = f"{TileType.MONSTER.value}:dragon"
+                    placed = True
+                tries += 1
+
     def is_valid_position(self, x: int, y: int) -> bool:
         return 0 <= x < self.width and 0 <= y < self.height
     
@@ -420,6 +430,7 @@ class DungeonCrawler:
         self.game_running = True
         self.monsters = self.create_monsters()
         self.items = self.create_items()
+        self.rewarded_quests = set()  # track rewards given
         self.initialize_quests()
         self.game_map = GameMap(self.map_size[0], self.map_size[1], difficulty)
         
@@ -429,22 +440,26 @@ class DungeonCrawler:
     def get_map_size_by_difficulty(self) -> Tuple[int, int]:
         return MAP_SIZES.get(self.difficulty, MAP_SIZES["normal"])
     
-    def create_monsters(self) -> Dict[str, Monster]:        
-        # Scale monster stats based on difficulty
+    def create_monsters(self) -> Dict[str, Monster]:
         scale_factor = 1.0
         if self.difficulty == "easy":
             scale_factor = 0.7
         elif self.difficulty == "hard":
             scale_factor = 1.5
-        
+
         monsters = {}
         for name, stats in BASE_MONSTERS.items():
-            scaled_health = int(stats["health"] * scale_factor)
-            scaled_attack = int(stats["attack"] * scale_factor)
-            scaled_defense = int(stats["defense"] * scale_factor)
-            
-            monsters[name] = Monster(name, scaled_health, scaled_attack, scaled_defense, stats["sprite"])
-        
+            m = Monster(
+                name,
+                int(stats["health"] * scale_factor),
+                int(stats["attack"] * scale_factor),
+                int(stats["defense"] * scale_factor),
+                stats.get("sprite")
+            )
+            # attach per-species rewards
+            setattr(m, "exp", stats.get("exp", 20))
+            setattr(m, "gold", stats.get("gold", 10))
+            monsters[name] = m
         return monsters
     
     def create_items(self) -> Dict[str, Item]:
@@ -459,14 +474,15 @@ class DungeonCrawler:
             "greater_potion": Item("Greater Health Potion", "Restores 50 health", 50, "consumable", 50),
             "super_potion": Item("Super Health Potion", "Restores 100 health", 100, "consumable", 100),
         }
+
     @staticmethod
     def get_default_quests():
         return [
-            Quest("Jinn Hunter", "Defeat 1 demon", "jinn", {"gold": 50}),
-            Quest("Treasure Collector", "Collect 1 treasures", "treasure", {"item": "steel_sword"}),
-            Quest("Demon Slayer", "Defeat the dragon", "demon", {"item": "magic_shield"})
+            Quest("Jinn Hunter", "Defeat 1 jinn", "jinn", {"gold": 50, "exp": 50}),
+            Quest("Treasure Collector", "Collect 1 treasure", "treasure", {"item": "steel_sword"}),
+            Quest("Demon Slayer", "Defeat the demon on depth 10", "demon",
+                {"item": "magic_shield", "gold": 200, "exp": 200}),
         ]
-    
     def initialize_quests(self):
         for quest in DungeonCrawler.get_default_quests():
             self.quest_log.add_quest(quest)
@@ -499,7 +515,7 @@ class DungeonCrawler:
             self.undo_move()
         elif command == "help" or command == "h":
             self.show_help()
-        elif command == "quit" or command == "q":
+        elif command == "quit" or command == "exit":
             self.game_running = False
         else:
             print(f"Unknown command: {command}")
@@ -547,22 +563,24 @@ class DungeonCrawler:
             
             quest = self.quest_log.complete_quest("treasure")
             if quest:
-                self.grant_quest_reward(quest)
-   
+                self.grant_quest_rewards()
         elif tile.startswith(TileType.MONSTER.value):
             parts = tile.split(":")
             if len(parts) > 1:
-                monster_name = parts[1]
+                monster_name = parts[1]          # explicit monster on the tile
             else:
-                monster_name = random.choice(list(self.monsters.keys()))  # fallback
-            
+                pool = list(self.monsters.keys())
+                # exclude dragon unless we're on level 10
+                if self.game_map.current_level < 10 and "dragon" in pool:
+                    pool.remove("dragon")
+                monster_name = random.choice(pool)
+
             monster = self.monsters[monster_name]
             print(f"A {monster.name} appears!")
             self.combat(monster)
             self.check_level_up()
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
 
-        
         elif tile == TileType.STAIRS_DOWN.value:
             print("You found stairs leading deeper into the dungeon!")
             self.next_level()
@@ -578,54 +596,64 @@ class DungeonCrawler:
             print(f"LEVEL UP! You are now level {self.player.level}!")
 
     def combat(self, monster: Monster):
-        """Combat system"""
         print(f"\n=== COMBAT: {monster.name} ===")
-        
-        while monster.health > 0 and self.player.is_alive():
-            # Player attacks
-            damage = max(1, self.player.attack - monster.defense)
-            monster.health -= damage
-            print(f"You deal {damage} damage to {monster.name}!")
-            
-            if monster.health <= 0:
-                print(f"You defeated {monster.name}!")
-                self.player.experience += 20
-                self.player.gold += random.randint(10, 30)
-                
-                # Check quest completion
-                quest = self.quest_log.complete_quest(monster.name.lower())
-                if quest:
-                    self.grant_quest_reward(quest)
+        # Clone a fresh mob for this encounter
+        mob = Monster(monster.name, monster.health, monster.attack, monster.defense, monster.sprite)
+        setattr(mob, "exp", getattr(monster, "exp", 20))
+        setattr(mob, "gold", getattr(monster, "gold", 10))
+
+        while mob.health > 0 and self.player.is_alive():
+            dmg = max(1, self.player.attack - mob.defense)
+            mob.health -= dmg
+            print(f"You deal {dmg} damage to {mob.name}!")
+
+            if mob.health <= 0:
+                print(f"You defeated {mob.name}!")
+                exp_gain = getattr(mob, "exp", 20)
+                gold_gain = getattr(mob, "gold", random.randint(10, 30))
+                self.player.experience += exp_gain
+                self.player.gold += gold_gain
+                print(f"Rewards: +{exp_gain} EXP, +{gold_gain} Gold")
+
+                # Quest check (use the exact monster key)
+                if self.quest_log.complete_quest(mob.name.lower()):
+                    self.grant_quest_rewards()
+                if mob.name.lower() == "dragon":
+                    print("You have slain the Dragon!")
                 break
-            
-            # Monster attacks
-            damage = max(1, monster.attack - self.player.defense)
-            self.player.take_damage(damage)
-            print(f"{monster.name} deals {damage} damage to you!")
-            
+
+            # Monster turn
+            mdmg = max(1, mob.attack - self.player.defense)
+            self.player.take_damage(mdmg)
+            print(f"{mob.name} deals {mdmg} damage to you!")
+
             if not self.player.is_alive():
                 print("You have been defeated!")
                 break
-        
+
         if self.player.is_alive():
             print(f"Combat ended. Your health: {self.player.health}")
 
+
     def grant_quest_rewards(self):
         for q in self.quest_log.get_quests():
-            if getattr(q, "completed", False) and q.title not in self.rewarded_quests:
-                reward = q.reward
-                if isinstance(reward, dict):
-                    if "gold" in reward:
-                        self.player.gold += reward["gold"]
-                        self.add_message(f"Quest '{q.title}' reward: +{reward['gold']} Gold")
-                    if "exp" in reward:
-                        self.player.experience += reward["exp"]
-                        self.add_message(f"Quest '{q.title}' reward: +{reward['exp']} EXP")
-                    if "item" in reward and reward["item"] in self.items:
-                        self.player.add_item(self.items[reward["item"]])
-                        self.add_message(f"Quest '{q.title}' reward: {self.items[reward['item']].name}")
+            if q.completed and q.title not in self.rewarded_quests:
+                reward = q.reward or {}
+                if "gold" in reward:
+                    amt = int(reward["gold"])
+                    self.player.gold += amt
+                    print(f"Quest '{q.title}' reward: +{amt} Gold")
+                if "exp" in reward:
+                    xp = int(reward["exp"])
+                    self.player.experience += xp
+                    print(f"Quest '{q.title}' reward: +{xp} EXP")
+                if "item" in reward and reward["item"] in self.items:
+                    item = self.items[reward["item"]]
+                    self.player.add_item(item)
+                    print(f"Quest '{q.title}' reward: {item.name}")
                 self.rewarded_quests.add(q.title)
-        print(f"Quest Completed: {q.title}")
+                print(f"Quest Completed: {q.title}")
+
 
     def process_monster_turns(self):
         """Process monster actions using queue"""
@@ -693,7 +721,7 @@ class DungeonCrawler:
         print("\n=== AVAILABLE COMMANDS ===")
         print("Movement: north/w, south/s, east/d, west/a")
         print("Actions: use <item>, inventory/i, status/s")
-        print("Game: quests/q, undo/u, help/h, quit/q")
+        print("Game: quests/q, undo/u, help/h, quit/exit")
         print("\n=== ITEM USAGE ===")
         print("• Use 'use <item>' to equip weapons/armor or consume potions")
         print("• Weapons increase attack, armor increases defense")
