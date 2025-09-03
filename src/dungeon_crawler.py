@@ -18,13 +18,11 @@ MAP_SIZES = {
     "hard": (25, 20),
 }
 
-
 class TileType(Enum):
     EMPTY = " "
     WALL = "#"
     TREASURE = "T"
     MONSTER = "M"
-    STAIRS_UP = "U"
     STAIRS_DOWN = "d"
     PLAYER = "P"
 
@@ -308,8 +306,6 @@ class GameMap:
         # Initialize empty map
         self.map_data = [[TileType.EMPTY.value for _ in range(self.width)] for _ in range(self.height)]
         self.visible_map = [[False for _ in range(self.width)] for _ in range(self.height)]
-        
-        
         # Add walls around the border
         for x in range(self.width):
             self.map_data[0][x] = TileType.WALL.value
