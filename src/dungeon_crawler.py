@@ -18,7 +18,6 @@ MAP_SIZES = {
     "hard": (25, 20),
 }
 
-
 class TileType(Enum):
     EMPTY = " "
     WALL = "#"
@@ -308,8 +307,6 @@ class GameMap:
         # Initialize empty map
         self.map_data = [[TileType.EMPTY.value for _ in range(self.width)] for _ in range(self.height)]
         self.visible_map = [[False for _ in range(self.width)] for _ in range(self.height)]
-        
-        
         # Add walls around the border
         for x in range(self.width):
             self.map_data[0][x] = TileType.WALL.value
@@ -325,16 +322,16 @@ class GameMap:
         # Difficulty-based map generation
         if self.difficulty == "easy":
             wall_count = self.width * self.height // 12
-            treasure_count = 3
-            monster_count = 2
+            treasure_count = 4
+            monster_count = 3
         elif self.difficulty == "hard":
             wall_count = self.width * self.height // 8
-            treasure_count = 7
-            monster_count = 5
+            treasure_count = 10
+            monster_count = 7
         else:  # normal
             wall_count = self.width * self.height // 10
-            treasure_count = 5
-            monster_count = 3
+            treasure_count = 7
+            monster_count = 5
         
         # Add random walls
         for _ in range(wall_count):
@@ -361,7 +358,7 @@ class GameMap:
         if self.map_data[y][x] == TileType.EMPTY.value:
             self.map_data[y][x] = TileType.STAIRS_DOWN.value
         # If this is level 10, ensure there's exactly one dragon tile somewhere
-        if self.current_level == 10:
+        if self.current_level == 5:
             tries = 0
             placed = False
             while tries < 500 and not placed:
@@ -380,7 +377,7 @@ class GameMap:
             return self.map_data[y][x]
         return TileType.WALL.value
     
-    def set_tile(self, x: int, y: int, tile_type: str):
+    def set_tile(self, x: int, y: int, tile_type: str): 
         if self.is_valid_position(x, y):
             self.map_data[y][x] = tile_type
     

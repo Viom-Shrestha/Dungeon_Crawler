@@ -11,11 +11,9 @@ pygame.init()
 pygame.mixer.init()
 
 # Constants
-SCREEN_WIDTH = 1200
-SCREEN_HEIGHT = 800
-TILE_SIZE = 32
+TILE_SIZE = 52
 UI_PANEL_WIDTH = 300
-MAX_LEVELS = 10
+MAX_LEVELS = 5
 ASSETS_DIR = "assets"
 HIGHSCORE_FILE = "highscore.txt"
 
@@ -37,6 +35,7 @@ GOLD = (255, 215, 0)
 sword_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "sword.mp3"))
 monster_roar = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "monster_roar.mp3"))
 levelup_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "levelup.mp3"))
+chest_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "chest.mp3"))
 # Import your existing classes
 from dungeon_crawler import (
     TileType, Item, Monster, Quest, QuestLog, MAP_SIZES, BASE_MONSTERS,
@@ -82,13 +81,20 @@ class Button:
                 return True
         return False
 
-def safe_load_sprite(path: str, fallback_color: Tuple[int, int, int] = BLUE) -> Optional[pygame.Surface]:
+def safe_load_sprite(path: str, fallback_color=(0, 0, 255), size=(TILE_SIZE, TILE_SIZE)) -> pygame.Surface:
     try:
-        surf = pygame.image.load(path).convert_alpha()
-        return surf
-    except Exception:
-        # Fallback: colored square
-        s = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        img = pygame.image.load(path)
+        # Prefer per-pixel alpha; otherwise use color key (top-left pixel)
+        has_per_pixel_alpha = (img.get_alpha() is not None) or (img.get_masks()[3] != 0)
+        img = img.convert_alpha() if has_per_pixel_alpha else img.convert()
+        if not has_per_pixel_alpha:
+            img.set_colorkey(img.get_at((0, 0)))
+        if size:
+            img = pygame.transform.smoothscale(img, size)
+        return img
+    except Exception as e:
+        print(f"[WARN] Could not load sprite {path}: {e}")
+        s = pygame.Surface(size, pygame.SRCALPHA)
         s.fill(fallback_color)
         return s
 
@@ -130,7 +136,8 @@ class DungeonCrawlerGUI:
         }
 
         # Pygame setup
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        self.width, self.height = self.screen.get_size()
         pygame.display.set_caption("Dungeon Crawler - GUI Version")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 24)
@@ -175,8 +182,36 @@ class DungeonCrawlerGUI:
         # Reveal starting area & ensure valid map
         self.ensure_valid_map(initial=True)
 
+        self.tile_variants = [
+            [random.randint(0, len(self.floor_tiles)-1) for _ in range(self.game_map.width)]
+            for _ in range(self.game_map.height)
+        ]
+
+
     # ---------- Setup / Loading ----------
     def load_sprites(self):
+        # --- Menu background ---
+        bg_path = os.path.join(ASSETS_DIR, "background.jpg")
+        self.menu_bg = safe_load_sprite(bg_path, (18, 18, 24))  # fallback color if missing
+        if self.menu_bg:
+            self.menu_bg = pygame.transform.scale(self.menu_bg, (self.width, self.height))
+        else:
+            # fallback if image not found
+            self.menu_bg = pygame.Surface((self.width, self.height))
+            self.menu_bg.fill((18, 18, 24))
+
+        # --- Floor tiles (randomized per tile draw) ---
+        self.floor_tiles = []
+        for i in range(1, 4):  # tile1.png, tile2.png, tile3.png
+            path = os.path.join(ASSETS_DIR, f"tile{i}.png")
+            surf = safe_load_sprite(path, LIGHT_GRAY)
+            self.floor_tiles.append(pygame.transform.scale(surf, (TILE_SIZE, TILE_SIZE)))
+
+        self.wall_solid = pygame.transform.scale(
+            safe_load_sprite(os.path.join(ASSETS_DIR, "wall.png"), BROWN),
+            (TILE_SIZE, TILE_SIZE)
+        )
+
         # Player 1 directional
         for d, color in [("up", BLUE), ("down", BLUE), ("left", BLUE), ("right", BLUE)]:
             p = os.path.join(ASSETS_DIR, f"player_{d}.png")
@@ -250,6 +285,14 @@ class DungeonCrawlerGUI:
                 f.write(str(seconds))
         except Exception:
             pass
+    
+    def world_to_screen(self, x, y):
+        # Center camera on P1
+        cam_x = self.player.x * TILE_SIZE - self.width // 2 + TILE_SIZE // 2
+        cam_y = self.player.y * TILE_SIZE - self.height // 2 + TILE_SIZE // 2
+        screen_x = x * TILE_SIZE - cam_x
+        screen_y = y * TILE_SIZE - cam_y
+        return screen_x, screen_y
 
     def get_map_size_by_difficulty(self) -> Tuple[int, int]:
         return MAP_SIZES.get(self.difficulty, MAP_SIZES["normal"])
@@ -281,8 +324,8 @@ class DungeonCrawlerGUI:
             self.quest_log.add_quest(quest)
 
     def create_menu_buttons(self):
-        cx = SCREEN_WIDTH // 2
-        start_y = SCREEN_HEIGHT // 2 - 40
+        cx = self.width // 2
+        start_y = self.height // 2 - 40
         self.menu_buttons = [
             Button(cx - 120, start_y - 120, 240, 50, "Start Game", GREEN, (0, 200, 0), 36),
             Button(cx - 120, start_y - 40, 240, 50, f"Difficulty: {self.difficulties[self.difficulty_index].capitalize()}", BLUE, (0, 0, 200), 32),
@@ -291,20 +334,25 @@ class DungeonCrawlerGUI:
     ]
 
     def create_play_buttons(self):
-        btn_y = SCREEN_HEIGHT - 100
+        btn_y = self.height - 100
         self.play_buttons = [
             Button(50, btn_y, 120, 40, "Inventory", BLUE, (0, 0, 200)),
             Button(180, btn_y, 100, 40, "Quests", PURPLE, (150, 0, 150)),
             Button(290, btn_y, 100, 40, "Undo", ORANGE, (220, 140, 0)),
         ]
         # Bottom-right quit
-        self.quit_button = Button(SCREEN_WIDTH - 110, SCREEN_HEIGHT - 60, 90, 40, "Quit", RED, (200, 0, 0))
+        self.quit_button = Button(self.width - 110, self.height - 60, 90, 40, "Quit", RED, (200, 0, 0))
 
     # ---------- Map / Flow ----------
     def ensure_valid_map(self, initial=False):
         # Generate map if initial or after level change
         if initial:
             self.game_map.generate_map()
+            self.tile_variants = [
+                [random.randint(0, len(self.floor_tiles) - 1) for _ in range(self.game_map.width)]
+                for _ in range(self.game_map.height)
+            ]
+
 
         # Ensure at least one stairs (except on final level where we may want a boss without stairs)
         if self.game_map.current_level < MAX_LEVELS:
@@ -334,6 +382,14 @@ class DungeonCrawlerGUI:
                 px, py = random.choice(empties)
         self.player.x, self.player.y = px, py
         self.game_map.reveal_area(self.player.x, self.player.y)
+
+        if self.game_map.current_level == MAX_LEVELS:
+            # Place dragon on a random empty tile
+            empties = [(x, y) for y in range(self.game_map.height) for x in range(self.game_map.width)
+                    if self.game_map.get_tile(x, y) == TileType.EMPTY.value]
+            if empties:
+                dx, dy = random.choice(empties)
+                self.game_map.set_tile(dx, dy, f"{TileType.MONSTER.value}:dragon")
 
         # --- Place Player 2 on an empty nearby tile (not same as P1) ---
         if self.multiplayer:
@@ -369,27 +425,25 @@ class DungeonCrawlerGUI:
                 if 0 <= nx < self.game_map.width and 0 <= ny < self.game_map.height:
                     if self.game_map.get_tile(nx, ny) == TileType.WALL.value:
                         self.game_map.set_tile(nx, ny, TileType.EMPTY.value)
-        
-        if self.game_map.current_level == MAX_LEVELS:
-            # Place dragon on a random empty tile
-            empties = [(x, y) for y in range(self.game_map.height) for x in range(self.game_map.width)
-                    if self.game_map.get_tile(x, y) == TileType.EMPTY.value]
-            if empties:
-                dx, dy = random.choice(empties)
-                self.game_map.set_tile(dx, dy, f"{TileType.MONSTER.value}:dragon")
 
 
     # ---------- UI Drawing ----------
     def draw_tile(self, x: int, y: int, tile_type: str, visible: bool):
-        screen_x = 50 + x * TILE_SIZE
-        screen_y = 50 + y * TILE_SIZE
+        
+        screen_x, screen_y = self.world_to_screen(x, y)
+        # Hidden tiles → dark
         if not visible:
             pygame.draw.rect(self.screen, DARK_GRAY, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
-            pygame.draw.rect(self.screen, BLACK, (screen_x, screen_y, TILE_SIZE, TILE_SIZE), 1)
             return
 
+        # --- Always draw a floor base first ---
+        idx = self.tile_variants[y][x]
+        self.screen.blit(self.floor_tiles[idx], (screen_x, screen_y))
+
+        # --- Overlay contents ---
         if tile_type == TileType.WALL.value:
-            pygame.draw.rect(self.screen, BROWN, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+            self.screen.blit(self.wall_solid, (screen_x, screen_y))
+
         elif tile_type == TileType.TREASURE.value:
             self.screen.blit(self.chest_sprite, (screen_x, screen_y))
 
@@ -398,47 +452,103 @@ class DungeonCrawlerGUI:
             if len(parts) > 1:
                 monster_name = parts[1]
             else:
-                # Assign a random monster subtype the first time
+                # If we only got "M" (from CLI map), assign a subtype now
                 pool = [k for k in self.monsters.keys() if k != "dragon"]
                 monster_name = random.choice(pool)
-                # Save it back into the map so it persists
-                self.game_map.set_tile(x, y, f"{TileType.MONSTER.value}:{monster_name}")
+                new_tile = f"{TileType.MONSTER.value}:{monster_name}"
+                self.game_map.set_tile(x, y, new_tile)   # Save permanently into the map
+                tile_type = new_tile
+                print(f"[DEBUG] Assigned {monster_name} at ({x},{y})")  # Optional debug
 
             sprite = self.monster_sprites.get(monster_name, self.monster_sprite)
             self.screen.blit(sprite, (screen_x, screen_y))
 
-
         elif tile_type == TileType.STAIRS_DOWN.value:
-            if self.stairs_sprite:
-                self.screen.blit(self.stairs_sprite, (screen_x, screen_y))
-            else:
-                pygame.draw.rect(self.screen, PURPLE, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
-        else:  # EMPTY
-            pygame.draw.rect(self.screen, LIGHT_GRAY, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
-
-        pygame.draw.rect(self.screen, BLACK, (screen_x, screen_y, TILE_SIZE, TILE_SIZE), 1)
+            self.screen.blit(self.stairs_sprite, (screen_x, screen_y))
         
     def draw_actor(self, actor, sprite):
         ax = 50 + actor.x * TILE_SIZE
         ay = 50 + actor.y * TILE_SIZE
         self.screen.blit(sprite, (ax, ay))
 
+    def draw_tile_at_screen(self, x, y, tile_type, visible, screen_x, screen_y):
+        if not visible:
+            pygame.draw.rect(self.screen, DARK_GRAY, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+            return
+
+        # Floor base
+        idx = self.tile_variants[y][x]
+        self.screen.blit(self.floor_tiles[idx], (screen_x, screen_y))
+
+        # Overlay content
+        if tile_type == TileType.WALL.value:
+            self.screen.blit(self.wall_solid, (screen_x, screen_y))
+        elif tile_type == TileType.TREASURE.value:
+            self.screen.blit(self.chest_sprite, (screen_x, screen_y))
+        elif tile_type.startswith(TileType.MONSTER.value):
+            parts = tile_type.split(":")
+            if len(parts) > 1:
+                monster_name = parts[1]
+            else:
+                # Assign subtype if missing
+                pool = [k for k in self.monsters.keys() if k != "dragon"]
+                monster_name = random.choice(pool)
+                new_tile = f"{TileType.MONSTER.value}:{monster_name}"
+                self.game_map.set_tile(x, y, new_tile)
+                tile_type = new_tile
+                print(f"[DEBUG] Assigned {monster_name} at ({x},{y})")
+            sprite = self.monster_sprites.get(monster_name, self.monster_sprite)
+            self.screen.blit(sprite, (screen_x, screen_y))
+
+        elif tile_type == TileType.STAIRS_DOWN.value:
+            self.screen.blit(self.stairs_sprite, (screen_x, screen_y))
+
+
     def draw_map(self):
-        for y in range(self.game_map.height):
-            for x in range(self.game_map.width):
+        # How many tiles fit on screen (plus buffer)
+        tiles_x = self.width // TILE_SIZE + 2
+        tiles_y = self.height // TILE_SIZE + 2
+
+        # Camera offsets: center on Player 1
+        cam_x = self.player.x * TILE_SIZE - self.width // 2 + TILE_SIZE // 2
+        cam_y = self.player.y * TILE_SIZE - self.height // 2 + TILE_SIZE // 2
+
+        # Clamp camera so it doesn't scroll past map edges
+        max_cam_x = self.game_map.width * TILE_SIZE - self.width
+        max_cam_y = self.game_map.height * TILE_SIZE - self.height
+        cam_x = max(0, min(cam_x, max_cam_x))
+        cam_y = max(0, min(cam_y, max_cam_y))
+
+        # Figure out visible range of tiles
+        start_x = max(0, cam_x // TILE_SIZE)
+        end_x = min(self.game_map.width, start_x + tiles_x)
+        start_y = max(0, cam_y // TILE_SIZE)
+        end_y = min(self.game_map.height, start_y + tiles_y)
+
+        # --- Draw visible tiles ---
+        for y in range(start_y, end_y):
+            for x in range(start_x, end_x):
                 tile_type = self.game_map.get_tile(x, y)
                 visible = self.game_map.visible_map[y][x]
-                self.draw_tile(x, y, tile_type, visible)
-        # Draw player
-        self.draw_actor(self.player, self.player_sprite)
+                screen_x = x * TILE_SIZE - cam_x
+                screen_y = y * TILE_SIZE - cam_y
+                self.draw_tile_at_screen(x, y, tile_type, visible, screen_x, screen_y)
+
+        # --- Draw players (on top of tiles) ---
+        px = self.player.x * TILE_SIZE - cam_x
+        py = self.player.y * TILE_SIZE - cam_y
+        self.screen.blit(self.player_sprite, (px, py))
+
         if self.multiplayer:
-            self.draw_actor(self.player2, self.player2_sprite)
+            p2x = self.player2.x * TILE_SIZE - cam_x
+            p2y = self.player2.y * TILE_SIZE - cam_y
+            self.screen.blit(self.player2_sprite, (p2x, p2y))
 
     def draw_ui_panel(self):
-        panel_x = SCREEN_WIDTH - UI_PANEL_WIDTH
+        panel_x = self.width - UI_PANEL_WIDTH
         panel_y = 0
-        pygame.draw.rect(self.screen, DARK_GRAY, (panel_x, panel_y, UI_PANEL_WIDTH, SCREEN_HEIGHT))
-        pygame.draw.rect(self.screen, WHITE, (panel_x, panel_y, UI_PANEL_WIDTH, SCREEN_HEIGHT), 2)
+        pygame.draw.rect(self.screen, DARK_GRAY, (panel_x, panel_y, UI_PANEL_WIDTH, self.height))
+        pygame.draw.rect(self.screen, WHITE, (panel_x, panel_y, UI_PANEL_WIDTH, self.height), 2)
 
         title = self.large_font.render(f"Level {self.game_map.current_level}/{MAX_LEVELS}", True, WHITE)
         self.screen.blit(title, (panel_x + 20, 20))
@@ -530,8 +640,8 @@ class DungeonCrawlerGUI:
         if not self.show_inventory:
             return
 
-        panel_x = SCREEN_WIDTH // 2 - 250
-        panel_y = SCREEN_HEIGHT // 2 - 250
+        panel_x = self.width // 2 - 250
+        panel_y = self.height // 2 - 250
         panel_w = 500
         panel_h = 550
 
@@ -609,8 +719,8 @@ class DungeonCrawlerGUI:
     def draw_quests(self):
         if not self.show_quests:
             return
-        panel_x = SCREEN_WIDTH // 2 - 250
-        panel_y = SCREEN_HEIGHT // 2 - 200
+        panel_x = self.width // 2 - 250
+        panel_y = self.height // 2 - 200
         panel_w = 500
         panel_h = 400
         pygame.draw.rect(self.screen, DARK_GRAY, (panel_x, panel_y, panel_w, panel_h), border_radius=10)
@@ -647,8 +757,8 @@ class DungeonCrawlerGUI:
     def use_item_click(self, mouse_pos, button: int):
         if not self.show_inventory:
             return
-        panel_x = SCREEN_WIDTH // 2 - 250
-        panel_y = SCREEN_HEIGHT // 2 - 250
+        panel_x = self.width // 2 - 250
+        panel_y = self.height // 2 - 250
         panel_w = 500
         panel_h = 500
         eq_y = panel_y + 125
@@ -737,6 +847,8 @@ class DungeonCrawlerGUI:
             actor.add_item(item)
             self.game_map.set_tile(x, y, TileType.EMPTY.value)
             self.add_message(f"You found Treasure: {item.name}!")
+            chest_sound.play()
+            # Check for treasure quest completion
             try:
                 quest = self.quest_log.complete_quest("treasure")
                 if quest:
@@ -786,7 +898,7 @@ class DungeonCrawlerGUI:
                 self.rewarded_quests.add(q.title)
 
     def combat(self, actor: Player, monster: Monster):
-        mob = Monster(monster.name, monster.health, monster.attack, monster.defense)
+        mob = monster
         setattr(mob, "exp", getattr(monster, "exp", 20))
         setattr(mob, "gold", getattr(monster, "gold", random.randint(10, 30)))
 
@@ -852,6 +964,10 @@ class DungeonCrawlerGUI:
             self.trigger_victory()
             return
         self.game_map.generate_map()
+        self.tile_variants = [
+            [random.randint(0, len(self.floor_tiles) - 1) for _ in range(self.game_map.width)]
+            for _ in range(self.game_map.height)
+        ]
         self.ensure_valid_map(initial=False)
         self.add_message(f"Welcome to level {self.game_map.current_level}!")
         # On final floor, increase monster density by converting some empties to monsters visually
@@ -1008,39 +1124,42 @@ class DungeonCrawlerGUI:
     def draw_loading(self):
         self.screen.fill(BLACK)
         t = self.title_font.render("Loading...", True, WHITE)
-        self.screen.blit(t, t.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
+        self.screen.blit(t, t.get_rect(center=(self.width//2, self.height//2)))
+        pygame.display.flip()
 
     def draw_menu(self):
-        self.screen.fill((18, 18, 24))
+        # 1. Draw background
+        self.screen.blit(self.menu_bg, (0, 0))
+
         title = self.title_font.render("Dungeon Crawler", True, GOLD)
-        self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH//2, 140)))
+        self.screen.blit(title, title.get_rect(center=(self.width//2, 140)))
 
         if self.highscore is not None:
             hs = self.font.render(f"Best Time: {self.highscore:.1f}s", True, LIGHT_GRAY)
-            self.screen.blit(hs, hs.get_rect(center=(SCREEN_WIDTH//2, 200)))
+            self.screen.blit(hs, hs.get_rect(center=(self.width//2, 200)))
 
         for b in self.menu_buttons:
             b.draw(self.screen)
 
         hint = self.font.render("ESC to quit • Use mouse to select", True, LIGHT_GRAY)
-        self.screen.blit(hint, hint.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT - 60)))
+        self.screen.blit(hint, hint.get_rect(center=(self.width//2, self.height - 60)))
 
     def draw_game_over(self):
         self.screen.fill((30, 0, 0))
         t1 = self.title_font.render("dead: You have fallen.", True, RED)
-        self.screen.blit(t1, t1.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 40)))
+        self.screen.blit(t1, t1.get_rect(center=(self.width//2, self.height//2 - 40)))
         t2 = self.font.render("Click or press any key to return to Main Menu", True, WHITE)
-        self.screen.blit(t2, t2.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 20)))
+        self.screen.blit(t2, t2.get_rect(center=(self.width//2, self.height//2 + 20)))
 
     def draw_victory(self):
         self.screen.fill((0, 30, 0))
         t1 = self.title_font.render("Dungeon Completed!", True, GOLD)
-        self.screen.blit(t1, t1.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 60)))
+        self.screen.blit(t1, t1.get_rect(center=(self.width//2, self.height//2 - 60)))
         t2 = self.font.render(f"Time: {self.run_time:.1f}s   Best: {self.highscore:.1f}s" if self.highscore else f"Time: {self.run_time:.1f}s",
                             True, WHITE)
-        self.screen.blit(t2, t2.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
+        self.screen.blit(t2, t2.get_rect(center=(self.width//2, self.height//2)))
         t3 = self.font.render("Click or press any key to return to Main Menu", True, WHITE)
-        self.screen.blit(t3, t3.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 40)))
+        self.screen.blit(t3, t3.get_rect(center=(self.width//2, self.height//2 + 40)))
 
     def draw_playing(self):
         if not self.player.is_alive() and self.player2 and not self.player2.is_alive():
@@ -1060,7 +1179,7 @@ class DungeonCrawlerGUI:
 
         controls_text = "WASD / Arrows: Move | ESC: Close/Back"
         controls = self.font.render(controls_text, True, LIGHT_GRAY)
-        self.screen.blit(controls, (20, SCREEN_HEIGHT - 30))
+        self.screen.blit(controls, (20, self.height - 30))
 
     # ---------- Main Loop ----------
     def run(self):
@@ -1073,6 +1192,8 @@ class DungeonCrawlerGUI:
             if self.state == GameState.LOADING:
                 self.draw_loading()
                 if time.time() - self.loading_start >= self.loading_duration:
+                    pygame.display.flip()
+                    pygame.time.delay(1000)
                     self.state = GameState.MENU
 
             elif self.state == GameState.MENU:
@@ -1093,7 +1214,7 @@ class DungeonCrawlerGUI:
 
                 controls_text = "WASD / Arrows: Move | I: (disabled) | Q: (disabled) | ESC: Close/Back"
                 controls = self.font.render(controls_text, True, LIGHT_GRAY)
-                self.screen.blit(controls, (20, SCREEN_HEIGHT - 30))
+                self.screen.blit(controls, (20, self.height - 30))
 
             elif self.state == GameState.GAME_OVER:
                 self.draw_game_over()
