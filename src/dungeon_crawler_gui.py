@@ -37,7 +37,7 @@ monster_roar = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "monster_roar.mp3"))
 levelup_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "levelup.mp3"))
 chest_sound = pygame.mixer.Sound(os.path.join(ASSETS_DIR, "chest.mp3"))
 # Import your existing classes
-from dungeon_crawler import (
+from game_engine import (
     TileType, Item, Monster, Quest, QuestLog, MAP_SIZES, BASE_MONSTERS,
     MoveStack, ActionQueue, Player, GameMap, DungeonCrawler
 )
