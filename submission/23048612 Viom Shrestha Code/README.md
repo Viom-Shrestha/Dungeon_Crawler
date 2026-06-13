@@ -1,1 +1,0 @@
-To run the program after installing the requirements, run the launcher.py file
